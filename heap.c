@@ -4,7 +4,7 @@
 
 typedef struct heap {
     /** Generic array of pointers. */
-    void **ptr;
+    int32_t **ptr;
     /** How many pointers there are currently in the array. */
     int32_t count;
 } heap_t;
@@ -12,7 +12,7 @@ typedef struct heap {
 heap_t *heap_init() {
     // The heap array is initially allocated to hold zero elements.
     heap_t *heap = malloc(sizeof(heap_t));
-    heap->ptr = malloc(0);
+    heap->ptr = NULL;
     heap->count = 0;
     return heap;
 }
