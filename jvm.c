@@ -4,6 +4,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "heap.h"
@@ -43,15 +44,273 @@ typedef struct {
  */
 optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                          heap_t *heap) {
-    /* You should remove these casts to void in your solution.
-     * They are just here so the code compiles without warnings. */
-    (void) method;
-    (void) locals;
-    (void) class;
-    (void) heap;
 
-    // Return void
     optional_value_t result = {.has_value = false};
+    int32_t stack[method->code.max_stack];
+    memset(stack, 0, method->code.max_stack);
+    u2 idx = 0;
+    int cont = 1;
+
+    for (u4 curr = 0; curr < method->code.code_length; curr++) {
+        if (cont == 0) {
+            break;
+        }
+        u1 mnemonic = method->code.code[curr];
+        if (mnemonic != i_invokestatic) {
+            switch (mnemonic) {
+                case i_bipush:
+                    curr++;
+                    if (idx >= method->code.max_stack) {
+                        fprintf(stderr, "Stack overflow on i_bipush!\n");
+                        exit(1);
+                    }
+                    stack[idx] = (int32_t) (int8_t) method->code.code[curr];
+                    idx++;
+                    break;
+                case i_iadd:
+                    if (idx < 2) {
+                        fprintf(stderr, "Stack underflow on i_iadd!\n");
+                        exit(1);
+                    }
+                    stack[idx - 2] = stack[idx - 2] + stack[idx - 1];
+                    idx--;
+                    break;
+                case i_isub:
+                    stack[idx - 2] = stack[idx - 2] - stack[idx - 1];
+                    idx--;
+                    break;
+                case i_imul:
+                    stack[idx - 2] = stack[idx - 2] * stack[idx - 1];
+                    idx--;
+                    break;
+                case i_idiv:
+                    stack[idx - 2] = stack[idx - 2] / stack[idx - 1];
+                    idx--;
+                    break;
+                case i_irem:
+                    stack[idx - 2] = stack[idx - 2] % stack[idx - 1];
+                    idx--;
+                    break;
+                case i_ineg:
+                    stack[idx - 1] = (i_iconst_m1 - i_iconst_0) * stack[idx - 1];
+                    break;
+                case i_ishl:
+                    stack[idx - 2] = stack[idx - 2] << stack[idx - 1];
+                    idx--;
+                    break;
+                case i_ishr:
+                    stack[idx - 2] = stack[idx - 2] >> stack[idx - 1];
+                    idx--;
+                    break;
+                case i_iushr:
+                    stack[idx - 2] = ((u4) stack[idx - 2]) >> stack[idx - 1];
+                    idx--;
+                    break;
+                case i_iand:
+                    stack[idx - 2] = stack[idx - 2] & stack[idx - 1];
+                    idx--;
+                    break;
+                case i_ior:
+                    stack[idx - 2] = stack[idx - 2] | stack[idx - 1];
+                    idx--;
+                    break;
+                case i_ixor:
+                    stack[idx - 2] = stack[idx - 2] ^ stack[idx - 1];
+                    idx--;
+                    break;
+                case i_getstatic:
+                    curr += 2;
+                    break;
+                case i_return:
+                    curr++;
+                    cont = 0;
+                    break;
+                case i_invokevirtual:
+                    idx--;
+                    printf("%d\n", stack[idx]);
+                    curr += 2;
+                    break;
+                case i_iconst_m1 ... i_iconst_5:
+                    stack[idx] = mnemonic - i_iconst_0;
+                    idx++;
+                    break;
+                case i_sipush:
+                    stack[idx] =
+                        (int16_t) (((int16_t) method->code.code[curr + 1] << 0x08) |
+                                   (int16_t) method->code.code[curr + 2]);
+                    idx++;
+                    curr += 2;
+                    break;
+                case i_iload:
+                    stack[idx] = locals[(u1) method->code.code[curr + 1]];
+                    curr++;
+                    idx++;
+                    break;
+                case i_istore:
+                    curr++;
+                    locals[method->code.code[curr]] = stack[idx - 1];
+                    idx--;
+                    break;
+                case i_iinc:
+                    locals[(u1) method->code.code[curr + 1]] +=
+                        (int8_t) method->code.code[curr + 2];
+                    curr += 2;
+                    break;
+                case i_iload_0 ... i_iload_3:
+                    stack[idx] = locals[(u1) mnemonic - i_iload_0];
+                    idx++;
+                    break;
+                case i_istore_0 ... i_istore_3:
+                    locals[mnemonic - i_istore_0] = stack[idx - 1];
+                    idx--;
+                    break;
+                case i_ldc:
+                    curr++;
+                    cp_info cp = class->constant_pool[(u1) method->code.code[curr] - 1];
+                    if (cp.tag == CONSTANT_Integer) {
+                        if (idx < 0 || idx >= method->code.max_stack) {
+                            fprintf(stderr, "Stack index out of bounds!\n");
+                            exit(1);
+                        }
+                        stack[idx] = ((CONSTANT_Integer_info *) cp.info)->bytes;
+                        idx++;
+                    }
+                    break;
+                case i_if_icmpeq ... i_if_icmple:
+                    if ((mnemonic == i_if_icmpeq && stack[idx - 2] == stack[idx - 1]) ||
+                        (mnemonic == i_if_icmpne && stack[idx - 2] != stack[idx - 1]) ||
+                        (mnemonic == i_if_icmplt && stack[idx - 2] < stack[idx - 1]) ||
+                        (mnemonic == i_if_icmpge && stack[idx - 2] >= stack[idx - 1]) ||
+                        (mnemonic == i_if_icmpgt && stack[idx - 2] > stack[idx - 1]) ||
+                        (mnemonic == i_if_icmple && stack[idx - 2] <= stack[idx - 1])) {
+                        curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                            method->code.code[curr + 2])) -
+                                1;
+                    }
+                    else {
+                        curr += 2;
+                    }
+                    idx -= 2;
+                    break;
+                case i_goto:
+                    curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                        method->code.code[curr + 2])) -
+                            1;
+                    break;
+                case i_ireturn:
+                    idx--;
+                    result = (optional_value_t){.has_value = true, .value = stack[idx]};
+                    curr++;
+                    cont = 0;
+                    break;
+                case i_ifeq ... i_ifle:
+                    idx--;
+                    if ((mnemonic == i_ifeq && stack[idx] == 0) ||
+                        (mnemonic == i_ifne && stack[idx] != 0) ||
+                        (mnemonic == i_iflt && stack[idx] < 0) ||
+                        (mnemonic == i_ifge && stack[idx] >= 0) ||
+                        (mnemonic == i_ifgt && stack[idx] > 0) ||
+                        (mnemonic == i_ifle && stack[idx] <= 0)) {
+                        curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                            method->code.code[curr + 2])) -
+                                1;
+                    }
+                    else {
+                        curr += 2;
+                    }
+                    break;
+
+                case i_nop:
+                    break;
+
+                case i_dup:
+                    stack[idx] = stack[idx - 1];
+                    idx++;
+                    break;
+
+                case i_newarray:
+                    curr++;
+                    int32_t count = stack[--idx];
+                    int32_t *rawArray = malloc(sizeof(int32_t) * (count + 1));
+                    rawArray[0] = count;
+                    int32_t *array = rawArray + 1;
+                    memset(array, 0, sizeof(int32_t) * count);
+                    int32_t ref = heap_add(heap, rawArray);
+                    stack[idx++] = ref;
+                    break;
+
+                case i_arraylength:
+                    ref = stack[--idx];
+                    array = heap_get(heap, ref);
+                    rawArray = array - 1;
+                    stack[idx++] = *rawArray;
+                    break;
+
+                case i_areturn:
+                    result = (optional_value_t){.has_value = true, .value = stack[--idx]};
+                    curr = method->code.code_length; 
+                    break;
+
+                case i_iastore: {
+                    int32_t value = stack[--idx];
+                    int32_t index = stack[--idx];
+                    ref = stack[--idx];
+                    array = heap_get(heap, ref);
+                    if (index < 0 ||
+                        index >= *rawArray) { 
+                        fprintf(stderr,
+                                "Array index out of bounds during i_iastore: %d\n",
+                                index);
+                        exit(1);
+                    }
+                    array[index] = value;
+                } break;
+
+                case i_iaload: {
+                    int32_t index = stack[--idx];
+                    ref = stack[--idx];
+                    array = heap_get(heap, ref);
+                    if (index < 0 ||
+                        index >= *rawArray) { 
+                        fprintf(stderr, "Array index out of bounds during i_iaload: %d\n",
+                                index);
+                        exit(1);
+                    }
+                    stack[idx++] = array[index];
+                } break;
+
+                case i_aload_0 ... i_aload_3:
+                    stack[idx++] = locals[mnemonic - i_aload_0];
+                    break;
+
+                case i_astore_0 ... i_astore_3:
+                    locals[mnemonic - i_astore_0] = stack[--idx];
+                    break;
+
+                default:
+                    fprintf(stderr, "Unsupported opcode: %x\n", mnemonic);
+                    exit(1);
+            }
+        }
+        else {
+            method_t *m = find_method_from_index(
+                (u2) ((method->code.code[curr + 1] << 8) | method->code.code[curr + 2]),
+                class);
+            uint16_t num_params = get_number_of_parameters(m);
+            int32_t l[m->code.max_locals];
+            memset(l, 0, m->code.max_locals);
+            for (u2 i = 0; i < num_params; i++) {
+                l[i] = stack[idx - num_params + i];
+            }
+            idx -= num_params;
+            optional_value_t res = execute(m, l, class, heap);
+            if (res.has_value) {
+                stack[idx] = res.value;
+                idx++;
+            }
+            curr += 2;
+        }
+    }
     return result;
 }
 
