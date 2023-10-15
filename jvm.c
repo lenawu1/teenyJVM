@@ -32,12 +32,6 @@ typedef struct {
     int32_t value;
 } optional_value_t;
 
-static inline void check_stack_bound(int idx, int max_idx, const char *err_msg) {
-    if (idx < 0 || idx >= max_idx) {
-        fprintf(stderr, "%s\n", err_msg);
-        exit(EXIT_FAILURE);
-    }
-}
 /**
  * Runs a method's instructions until the method returns.
  *
@@ -52,8 +46,10 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                          heap_t *heap) {
     optional_value_t result = {.has_value = false};
     int *stack = malloc(sizeof(int) * (1 + method->code.max_stack));
-    assert(stack != NULL && "Memory allocation failure");
-
+    if (!stack) {
+        fprintf(stderr, "Memory allocation failure for stack\n");
+        exit(EXIT_FAILURE);
+    }
     stack[0] = 0;
     u2 idx = 0;
     int cont = 1;
@@ -67,16 +63,11 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
             switch (mnemonic) {
                 case i_bipush:
                     curr++;
-                    check_stack_bound(idx, method->code.max_stack,
-                                      "Stack overflow on i_bipush");
 
-                    stack[idx] = (int32_t)(int8_t) method->code.code[curr];
+                    stack[idx] = (int32_t) (int8_t) method->code.code[curr];
                     idx++;
                     break;
                 case i_iadd:
-                    check_stack_bound(idx - 1, method->code.max_stack,
-                                      "Stack overflow on i_add");
-
                     stack[idx - 2] = stack[idx - 2] + stack[idx - 1];
                     idx--;
                     break;
@@ -141,8 +132,8 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                     break;
                 case i_sipush:
                     stack[idx] =
-                        (int16_t)(((int16_t) method->code.code[curr + 1] << 0x08) |
-                                  (int16_t) method->code.code[curr + 2]);
+                        (int16_t) (((int16_t) method->code.code[curr + 1] << 0x08) |
+                                   (int16_t) method->code.code[curr + 2]);
                     idx++;
                     curr += 2;
                     break;
@@ -194,8 +185,8 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                         (mnemonic == i_if_icmpge && stack[idx - 2] >= stack[idx - 1]) ||
                         (mnemonic == i_if_icmpgt && stack[idx - 2] > stack[idx - 1]) ||
                         (mnemonic == i_if_icmple && stack[idx - 2] <= stack[idx - 1])) {
-                        curr += ((int16_t)((method->code.code[curr + 1] << 8) |
-                                           method->code.code[curr + 2])) -
+                        curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                            method->code.code[curr + 2])) -
                                 1;
                     }
                     else {
@@ -204,8 +195,8 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                     idx -= 2;
                     break;
                 case i_goto:
-                    curr += ((int16_t)((method->code.code[curr + 1] << 8) |
-                                       method->code.code[curr + 2])) -
+                    curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                        method->code.code[curr + 2])) -
                             1;
                     break;
                 case i_ireturn:
@@ -222,8 +213,8 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                         (mnemonic == i_ifge && stack[idx] >= 0) ||
                         (mnemonic == i_ifgt && stack[idx] > 0) ||
                         (mnemonic == i_ifle && stack[idx] <= 0)) {
-                        curr += ((int16_t)((method->code.code[curr + 1] << 8) |
-                                           method->code.code[curr + 2])) -
+                        curr += ((int16_t) ((method->code.code[curr + 1] << 8) |
+                                            method->code.code[curr + 2])) -
                                 1;
                     }
                     else {
@@ -304,7 +295,7 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
         }
         else {
             method_t *m = find_method_from_index(
-                (u2)((method->code.code[curr + 1] << 8) | method->code.code[curr + 2]),
+                (u2) ((method->code.code[curr + 1] << 8) | method->code.code[curr + 2]),
                 class);
             uint16_t num_params = get_number_of_parameters(m);
             int32_t l[m->code.max_locals];
