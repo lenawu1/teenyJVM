@@ -32,6 +32,12 @@ typedef struct {
     int32_t value;
 } optional_value_t;
 
+static inline void check_stack_bound(int idx, int max_idx, const char *err_msg) {
+    if (idx < 0 || idx >= max_idx) {
+        fprintf(stderr, "%s\n", err_msg);
+        exit(EXIT_FAILURE);
+    }
+}
 /**
  * Runs a method's instructions until the method returns.
  *
@@ -44,10 +50,11 @@ typedef struct {
  */
 optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                          heap_t *heap) {
-
     optional_value_t result = {.has_value = false};
-    int32_t stack[method->code.max_stack];
-    memset(stack, 0, method->code.max_stack);
+    int *stack = malloc(sizeof(int) * (1 + method->code.max_stack));
+    assert(stack != NULL && "Memory allocation failure");
+
+    stack[0] = 0;
     u2 idx = 0;
     int cont = 1;
 
@@ -60,18 +67,16 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
             switch (mnemonic) {
                 case i_bipush:
                     curr++;
-                    if (idx >= method->code.max_stack) {
-                        fprintf(stderr, "Stack overflow on i_bipush!\n");
-                        exit(1);
-                    }
+                    check_stack_bound(idx, method->code.max_stack,
+                                      "Stack overflow on i_bipush");
+
                     stack[idx] = (int32_t) (int8_t) method->code.code[curr];
                     idx++;
                     break;
                 case i_iadd:
-                    if (idx < 2) {
-                        fprintf(stderr, "Stack underflow on i_iadd!\n");
-                        exit(1);
-                    }
+                    check_stack_bound(idx - 1, method->code.max_stack,
+                                      "Stack overflow on i_add");
+
                     stack[idx - 2] = stack[idx - 2] + stack[idx - 1];
                     idx--;
                     break;
@@ -141,14 +146,27 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                     idx++;
                     curr += 2;
                     break;
+                case i_aload:
                 case i_iload:
-                    stack[idx] = locals[(u1) method->code.code[curr + 1]];
+                    assert(idx < method->code.max_stack);
+                    assert(curr + 1 < method->code.code_length);
+                    unsigned char ubyte1 = method->code.code[curr + 1];
+                    stack[idx] = locals[ubyte1];
                     curr++;
                     idx++;
                     break;
+                case i_astore:
                 case i_istore:
                     curr++;
                     locals[method->code.code[curr]] = stack[idx - 1];
+                    idx--;
+                    break;
+                case i_iload_0 ... i_iload_3:
+                    stack[idx] = locals[mnemonic - i_iload_0];
+                    idx++;
+                    break;
+                case i_istore_0 ... i_istore_3:
+                    locals[mnemonic - i_istore_0] = stack[idx - 1];
                     idx--;
                     break;
                 case i_iinc:
@@ -156,14 +174,7 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                         (int8_t) method->code.code[curr + 2];
                     curr += 2;
                     break;
-                case i_iload_0 ... i_iload_3:
-                    stack[idx] = locals[(u1) mnemonic - i_iload_0];
-                    idx++;
-                    break;
-                case i_istore_0 ... i_istore_3:
-                    locals[mnemonic - i_istore_0] = stack[idx - 1];
-                    idx--;
-                    break;
+
                 case i_ldc:
                     curr++;
                     cp_info cp = class->constant_pool[(u1) method->code.code[curr] - 1];
@@ -221,75 +232,74 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                     break;
 
                 case i_nop:
-                    break;
-
                 case i_dup:
                     stack[idx] = stack[idx - 1];
                     idx++;
                     break;
 
-                case i_newarray:
+                case i_newarray: {
                     curr++;
                     int32_t count = stack[--idx];
-                    int32_t *rawArray = malloc(sizeof(int32_t) * (count + 1));
+                    int32_t *rawArray = calloc(count + 1, sizeof(int32_t));
                     rawArray[0] = count;
-                    int32_t *array = rawArray + 1;
-                    memset(array, 0, sizeof(int32_t) * count);
+
                     int32_t ref = heap_add(heap, rawArray);
                     stack[idx++] = ref;
                     break;
+                }
 
-                case i_arraylength:
-                    ref = stack[--idx];
-                    array = heap_get(heap, ref);
-                    rawArray = array - 1;
-                    stack[idx++] = *rawArray;
+                case i_arraylength: {
+                    int32_t ref = stack[--idx];
+                    int32_t *array = heap_get(heap, ref);
+                    stack[idx++] = array[0];
                     break;
+                }
 
                 case i_areturn:
                     result = (optional_value_t){.has_value = true, .value = stack[--idx]};
-                    curr = method->code.code_length; 
+                    curr = method->code.code_length;
                     break;
 
                 case i_iastore: {
                     int32_t value = stack[--idx];
                     int32_t index = stack[--idx];
-                    ref = stack[--idx];
-                    array = heap_get(heap, ref);
-                    if (index < 0 ||
-                        index >= *rawArray) { 
+                    int32_t ref = stack[--idx];
+                    int32_t *array = heap_get(heap, ref);
+                    if (index < 0 || index >= array[0]) {
                         fprintf(stderr,
                                 "Array index out of bounds during i_iastore: %d\n",
                                 index);
                         exit(1);
                     }
-                    array[index] = value;
-                } break;
+                    array[index + 1] = value; 
+                    break;
+                }
 
                 case i_iaload: {
                     int32_t index = stack[--idx];
-                    ref = stack[--idx];
-                    array = heap_get(heap, ref);
-                    if (index < 0 ||
-                        index >= *rawArray) { 
+                    int32_t ref = stack[--idx];
+                    int32_t *array = heap_get(heap, ref);
+                    if (index < 0 || index >= array[0]) {
                         fprintf(stderr, "Array index out of bounds during i_iaload: %d\n",
                                 index);
                         exit(1);
                     }
-                    stack[idx++] = array[index];
-                } break;
+                    stack[idx++] = array[index + 1]; 
+                    break;
+                }
 
                 case i_aload_0 ... i_aload_3:
-                    stack[idx++] = locals[mnemonic - i_aload_0];
+                    stack[idx] = locals[(u1) mnemonic - i_aload_0];
+                    idx++;
                     break;
-
                 case i_astore_0 ... i_astore_3:
-                    locals[mnemonic - i_astore_0] = stack[--idx];
+                    locals[mnemonic - i_astore_0] = stack[idx - 1];
+                    idx--;
                     break;
 
                 default:
                     fprintf(stderr, "Unsupported opcode: %x\n", mnemonic);
-                    exit(1);
+                    exit(EXIT_FAILURE);
             }
         }
         else {
@@ -303,6 +313,10 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                 l[i] = stack[idx - num_params + i];
             }
             idx -= num_params;
+            if (idx < 0) {
+                fprintf(stderr, "index out of bounds");
+                exit(1);
+            }
             optional_value_t res = execute(m, l, class, heap);
             if (res.has_value) {
                 stack[idx] = res.value;
@@ -311,6 +325,7 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
             curr += 2;
         }
     }
+    free(stack);
     return result;
 }
 
