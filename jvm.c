@@ -68,9 +68,15 @@ optional_value_t execute(method_t *method, int32_t *locals, class_file_t *class,
                     idx++;
                     break;
                 case i_iadd:
-                    stack[idx - 2] = stack[idx - 2] + stack[idx - 1];
-                    idx--;
+                    if (idx >= 2) {
+                        stack[idx - 2] = stack[idx - 2] + stack[idx - 1];
+                        idx--;
+                    }
+                    else {
+                        fprintf(stderr, "Index out of bounds\n");
+                    }
                     break;
+
                 case i_isub:
                     stack[idx - 2] = stack[idx - 2] - stack[idx - 1];
                     idx--;
